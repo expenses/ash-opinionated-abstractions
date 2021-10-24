@@ -119,13 +119,6 @@ pub fn select_physical_device(
                 has_required_extensions &= device_has_extension;
             }
 
-            if log::log_enabled!(log::Level::Debug) {
-                log::debug!("  Supported extensions:");
-                supported_device_extensions.iter().for_each(|extension| {
-                    log::debug!("    * {:?}", &cstr_from_array(&extension.extension_name));
-                });
-            }
-
             if !has_required_extensions {
                 return None;
             }

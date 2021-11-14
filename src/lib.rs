@@ -182,6 +182,7 @@ pub fn load_shader_module_as_stage<'a>(
 }
 
 pub enum VertexAttribute {
+    Uint,
     Float,
     Vec2,
     Vec3,
@@ -191,7 +192,7 @@ pub enum VertexAttribute {
 impl VertexAttribute {
     fn size(&self) -> u32 {
         match self {
-            Self::Float => 4,
+            Self::Float | Self::Uint => 4,
             Self::Vec2 => 8,
             Self::Vec3 => 12,
             Self::Vec4 => 16,
@@ -200,6 +201,7 @@ impl VertexAttribute {
 
     fn format(&self) -> vk::Format {
         match self {
+            Self::Uint => vk::Format::R32_UINT,
             Self::Float => vk::Format::R32_SFLOAT,
             Self::Vec2 => vk::Format::R32G32_SFLOAT,
             Self::Vec3 => vk::Format::R32G32B32_SFLOAT,
@@ -209,23 +211,27 @@ impl VertexAttribute {
 }
 
 pub fn create_vertex_attribute_descriptions(
-    binding: u32,
-    attributes: &[VertexAttribute],
+    attributes: &[&[VertexAttribute]],
 ) -> Vec<vk::VertexInputAttributeDescription> {
     let mut descriptions = Vec::with_capacity(attributes.len());
 
-    let mut offset = 0;
+    let mut location = 0;
 
-    for (i, attribute) in attributes.iter().enumerate() {
-        descriptions.push(
-            *vk::VertexInputAttributeDescription::builder()
-                .binding(binding)
-                .location(i as u32)
-                .format(attribute.format())
-                .offset(offset),
-        );
+    for (binding, attributes) in attributes.iter().enumerate() {
+        let mut offset = 0;
 
-        offset += attribute.size();
+        for attribute in attributes.iter() {
+            descriptions.push(
+                *vk::VertexInputAttributeDescription::builder()
+                    .binding(binding as u32)
+                    .location(location)
+                    .format(attribute.format())
+                    .offset(offset),
+            );
+
+            offset += attribute.size();
+            location += 1;
+        }
     }
 
     descriptions
@@ -305,10 +311,12 @@ impl<'a> GraphicsPipelineDescriptor<'a> {
                 .scissor_count(1),
             dynamic_state: vk::PipelineDynamicStateCreateInfo::builder()
                 .dynamic_states(&[vk::DynamicState::VIEWPORT, vk::DynamicState::SCISSOR]),
-            depth_stencil: self.depth_stencil_state.as_ref().map(|state| vk::PipelineDepthStencilStateCreateInfo::builder()
-                .depth_test_enable(state.depth_test_enable)
-                .depth_write_enable(state.depth_write_enable)
-                .depth_compare_op(state.depth_compare_op)),
+            depth_stencil: self.depth_stencil_state.as_ref().map(|state| {
+                vk::PipelineDepthStencilStateCreateInfo::builder()
+                    .depth_test_enable(state.depth_test_enable)
+                    .depth_write_enable(state.depth_write_enable)
+                    .depth_compare_op(state.depth_compare_op)
+            }),
             multisample_state: vk::PipelineMultisampleStateCreateInfo::builder()
                 .sample_shading_enable(false)
                 .rasterization_samples(vk::SampleCountFlags::TYPE_1),
@@ -464,6 +472,15 @@ pub fn create_image_from_bytes(
             None,
         )
     }?;
+
+    if let Some(debug_utils_loader) = init_resources.debug_utils_loader {
+        set_object_name(
+            init_resources.device,
+            debug_utils_loader,
+            view,
+            &format!("{} view", name),
+        )?;
+    }
 
     unsafe {
         vk_sync::cmd::pipeline_barrier(
@@ -715,6 +732,15 @@ impl Image {
                 None,
             )
         }?;
+
+        if let Some(debug_utils_loader) = init_resources.debug_utils_loader {
+            set_object_name(
+                init_resources.device,
+                debug_utils_loader,
+                view,
+                &format!("{} view", name),
+            )?;
+        }
 
         Ok(Self {
             image,

@@ -395,27 +395,43 @@ pub struct InitResources<'a> {
     pub debug_utils_loader: Option<&'a DebugUtilsLoader>,
 }
 
-pub fn create_image_from_bytes(
-    bytes: &[u8],
-    extent: vk::Extent3D,
-    view_ty: vk::ImageViewType,
-    format: vk::Format,
-    name: &str,
-    init_resources: &mut InitResources,
-    next_accesses: &[vk_sync::AccessType],
-    next_layout: vk_sync::ImageLayout,
-) -> anyhow::Result<(Image, Buffer)> {
-    fn ty_from_view_ty(ty: vk::ImageViewType) -> vk::ImageType {
-        match ty {
-            vk::ImageViewType::TYPE_1D | vk::ImageViewType::TYPE_1D_ARRAY => vk::ImageType::TYPE_1D,
-            vk::ImageViewType::TYPE_2D
-            | vk::ImageViewType::TYPE_2D_ARRAY
-            | vk::ImageViewType::CUBE
-            | vk::ImageViewType::CUBE_ARRAY => vk::ImageType::TYPE_2D,
-            vk::ImageViewType::TYPE_3D => vk::ImageType::TYPE_3D,
-            _ => vk::ImageType::default(),
-        }
+fn ty_from_view_ty(ty: vk::ImageViewType) -> vk::ImageType {
+    match ty {
+        vk::ImageViewType::TYPE_1D | vk::ImageViewType::TYPE_1D_ARRAY => vk::ImageType::TYPE_1D,
+        vk::ImageViewType::TYPE_2D
+        | vk::ImageViewType::TYPE_2D_ARRAY
+        | vk::ImageViewType::CUBE
+        | vk::ImageViewType::CUBE_ARRAY => vk::ImageType::TYPE_2D,
+        vk::ImageViewType::TYPE_3D => vk::ImageType::TYPE_3D,
+        _ => vk::ImageType::default(),
     }
+}
+
+pub struct LoadImageDescriptor<'a> {
+    pub bytes: &'a [u8],
+    pub extent: vk::Extent3D,
+    pub view_ty: vk::ImageViewType,
+    pub format: vk::Format,
+    pub name: &'a str,
+    pub next_accesses: &'a [vk_sync::AccessType],
+    pub next_layout: vk_sync::ImageLayout,
+    pub mip_levels: u32,
+}
+
+pub fn load_image_from_bytes(
+    descriptor: &LoadImageDescriptor,
+    init_resources: &mut InitResources,
+) -> anyhow::Result<(Image, Buffer)> {
+    let &LoadImageDescriptor {
+        bytes,
+        extent,
+        view_ty,
+        format,
+        name,
+        next_accesses,
+        next_layout,
+        mip_levels,
+    } = descriptor;
 
     let staging_buffer = Buffer::new(
         bytes,
@@ -424,16 +440,22 @@ pub fn create_image_from_bytes(
         init_resources,
     )?;
 
+    let mut usage = vk::ImageUsageFlags::SAMPLED | vk::ImageUsageFlags::TRANSFER_DST;
+
+    if mip_levels > 1 {
+        usage |= vk::ImageUsageFlags::TRANSFER_SRC;
+    }
+
     let image = unsafe {
         init_resources.device.create_image(
             &vk::ImageCreateInfo::builder()
                 .image_type(ty_from_view_ty(view_ty))
                 .format(format)
                 .extent(extent)
-                .mip_levels(1)
+                .mip_levels(mip_levels)
                 .array_layers(1)
                 .samples(vk::SampleCountFlags::TYPE_1)
-                .usage(vk::ImageUsageFlags::SAMPLED | vk::ImageUsageFlags::TRANSFER_DST),
+                .usage(usage),
             None,
         )
     }?;
@@ -457,9 +479,9 @@ pub fn create_image_from_bytes(
         set_object_name(init_resources.device, debug_utils_loader, image, name)?;
     }
 
-    let subresource_range = *vk::ImageSubresourceRange::builder()
+    let full_subresource_range = *vk::ImageSubresourceRange::builder()
         .aspect_mask(vk::ImageAspectFlags::COLOR)
-        .level_count(1)
+        .level_count(mip_levels)
         .layer_count(1);
 
     let view = unsafe {
@@ -468,7 +490,7 @@ pub fn create_image_from_bytes(
                 .image(image)
                 .view_type(view_ty)
                 .format(format)
-                .subresource_range(subresource_range),
+                .subresource_range(full_subresource_range),
             None,
         )
     }?;
@@ -493,7 +515,7 @@ pub fn create_image_from_bytes(
                 next_accesses: &[vk_sync::AccessType::TransferWrite],
                 next_layout: vk_sync::ImageLayout::Optimal,
                 image,
-                range: subresource_range,
+                range: full_subresource_range,
                 discard_contents: true,
                 ..Default::default()
             }],
@@ -516,6 +538,97 @@ pub fn create_image_from_bytes(
                 .image_extent(extent)],
         );
 
+        let mut mip_width = extent.width as i32;
+        let mut mip_height = extent.height as i32;
+
+        for i in 0..mip_levels - 1 {
+            let mip_i = *vk::ImageSubresourceRange::builder()
+                .aspect_mask(vk::ImageAspectFlags::COLOR)
+                .level_count(1)
+                .base_mip_level(i)
+                .layer_count(1);
+
+            vk_sync::cmd::pipeline_barrier(
+                init_resources.device,
+                init_resources.command_buffer,
+                None,
+                &[],
+                &[vk_sync::ImageBarrier {
+                    previous_accesses: &[vk_sync::AccessType::TransferWrite],
+                    next_accesses: &[vk_sync::AccessType::TransferRead],
+                    next_layout: vk_sync::ImageLayout::Optimal,
+                    image,
+                    range: mip_i,
+                    ..Default::default()
+                }],
+            );
+
+            let blit = vk::ImageBlit {
+                src_subresource: vk::ImageSubresourceLayers {
+                    aspect_mask: vk::ImageAspectFlags::COLOR,
+                    mip_level: i,
+                    base_array_layer: 0,
+                    layer_count: 1,
+                },
+                src_offsets: [
+                    vk::Offset3D::default(),
+                    vk::Offset3D {
+                        x: mip_width,
+                        y: mip_height,
+                        z: 1,
+                    },
+                ],
+                dst_subresource: vk::ImageSubresourceLayers {
+                    aspect_mask: vk::ImageAspectFlags::COLOR,
+                    mip_level: i + 1,
+                    base_array_layer: 0,
+                    layer_count: 1,
+                },
+                dst_offsets: [
+                    vk::Offset3D::default(),
+                    vk::Offset3D {
+                        x: (mip_width / 2).max(1),
+                        y: (mip_height / 2).max(1),
+                        z: 1,
+                    },
+                ],
+            };
+
+            init_resources.device.cmd_blit_image(
+                init_resources.command_buffer,
+                image,
+                vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
+                image,
+                vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+                &[blit],
+                vk::Filter::LINEAR,
+            );
+
+            vk_sync::cmd::pipeline_barrier(
+                init_resources.device,
+                init_resources.command_buffer,
+                None,
+                &[],
+                &[vk_sync::ImageBarrier {
+                    previous_accesses: &[vk_sync::AccessType::TransferRead],
+                    next_accesses,
+                    next_layout,
+                    image,
+                    range: mip_i,
+                    ..Default::default()
+                }],
+            );
+
+            mip_width = (mip_width / 2).max(1);
+            mip_height = (mip_height / 2).max(1);
+        }
+
+        let mip_last = *vk::ImageSubresourceRange::builder()
+            .aspect_mask(vk::ImageAspectFlags::COLOR)
+            .level_count(1)
+            .base_mip_level(mip_levels - 1)
+            .layer_count(1);
+
         vk_sync::cmd::pipeline_barrier(
             init_resources.device,
             init_resources.command_buffer,
@@ -526,7 +639,7 @@ pub fn create_image_from_bytes(
                 next_accesses,
                 next_layout,
                 image,
-                range: subresource_range,
+                range: mip_last,
                 ..Default::default()
             }],
         );

@@ -504,23 +504,23 @@ pub fn load_image_from_bytes(
         )?;
     }
 
-    unsafe {
-        vk_sync::cmd::pipeline_barrier(
-            init_resources.device,
-            init_resources.command_buffer,
-            None,
-            &[],
-            &[vk_sync::ImageBarrier {
-                previous_accesses: &[vk_sync::AccessType::Nothing],
-                next_accesses: &[vk_sync::AccessType::TransferWrite],
-                next_layout: vk_sync::ImageLayout::Optimal,
-                image,
-                range: full_subresource_range,
-                discard_contents: true,
-                ..Default::default()
-            }],
-        );
+    vk_sync::cmd::pipeline_barrier(
+        init_resources.device,
+        init_resources.command_buffer,
+        None,
+        &[],
+        &[vk_sync::ImageBarrier {
+            previous_accesses: &[vk_sync::AccessType::Nothing],
+            next_accesses: &[vk_sync::AccessType::TransferWrite],
+            next_layout: vk_sync::ImageLayout::Optimal,
+            image,
+            range: full_subresource_range,
+            discard_contents: true,
+            ..Default::default()
+        }],
+    );
 
+    unsafe {
         init_resources.device.cmd_copy_buffer_to_image(
             init_resources.command_buffer,
             staging_buffer.buffer,
@@ -538,95 +538,9 @@ pub fn load_image_from_bytes(
                 .image_extent(extent)],
         );
 
-        let mut mip_width = extent.width as i32;
-        let mut mip_height = extent.height as i32;
-
-        for i in 0..mip_levels - 1 {
-            let mip_i = *vk::ImageSubresourceRange::builder()
-                .aspect_mask(vk::ImageAspectFlags::COLOR)
-                .level_count(1)
-                .base_mip_level(i)
-                .layer_count(1);
-
-            vk_sync::cmd::pipeline_barrier(
-                init_resources.device,
-                init_resources.command_buffer,
-                None,
-                &[],
-                &[vk_sync::ImageBarrier {
-                    previous_accesses: &[vk_sync::AccessType::TransferWrite],
-                    next_accesses: &[vk_sync::AccessType::TransferRead],
-                    next_layout: vk_sync::ImageLayout::Optimal,
-                    image,
-                    range: mip_i,
-                    ..Default::default()
-                }],
-            );
-
-            let blit = vk::ImageBlit {
-                src_subresource: vk::ImageSubresourceLayers {
-                    aspect_mask: vk::ImageAspectFlags::COLOR,
-                    mip_level: i,
-                    base_array_layer: 0,
-                    layer_count: 1,
-                },
-                src_offsets: [
-                    vk::Offset3D::default(),
-                    vk::Offset3D {
-                        x: mip_width,
-                        y: mip_height,
-                        z: 1,
-                    },
-                ],
-                dst_subresource: vk::ImageSubresourceLayers {
-                    aspect_mask: vk::ImageAspectFlags::COLOR,
-                    mip_level: i + 1,
-                    base_array_layer: 0,
-                    layer_count: 1,
-                },
-                dst_offsets: [
-                    vk::Offset3D::default(),
-                    vk::Offset3D {
-                        x: (mip_width / 2).max(1),
-                        y: (mip_height / 2).max(1),
-                        z: 1,
-                    },
-                ],
-            };
-
-            init_resources.device.cmd_blit_image(
-                init_resources.command_buffer,
-                image,
-                vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
-                image,
-                vk::ImageLayout::TRANSFER_DST_OPTIMAL,
-                &[blit],
-                vk::Filter::LINEAR,
-            );
-
-            vk_sync::cmd::pipeline_barrier(
-                init_resources.device,
-                init_resources.command_buffer,
-                None,
-                &[],
-                &[vk_sync::ImageBarrier {
-                    previous_accesses: &[vk_sync::AccessType::TransferRead],
-                    next_accesses,
-                    next_layout,
-                    image,
-                    range: mip_i,
-                    ..Default::default()
-                }],
-            );
-
-            mip_width = (mip_width / 2).max(1);
-            mip_height = (mip_height / 2).max(1);
-        }
-
-        let mip_last = *vk::ImageSubresourceRange::builder()
+        let base_subresource_range = *vk::ImageSubresourceRange::builder()
             .aspect_mask(vk::ImageAspectFlags::COLOR)
             .level_count(1)
-            .base_mip_level(mip_levels - 1)
             .layer_count(1);
 
         vk_sync::cmd::pipeline_barrier(
@@ -636,13 +550,34 @@ pub fn load_image_from_bytes(
             &[],
             &[vk_sync::ImageBarrier {
                 previous_accesses: &[vk_sync::AccessType::TransferWrite],
-                next_accesses,
-                next_layout,
+                next_accesses: if mip_levels > 1 {
+                    &[vk_sync::AccessType::TransferRead]
+                } else {
+                    next_accesses
+                },
+                next_layout: if mip_levels > 1 {
+                    vk_sync::ImageLayout::Optimal
+                } else {
+                    next_layout
+                },
                 image,
-                range: mip_last,
+                range: base_subresource_range,
                 ..Default::default()
             }],
         );
+
+        if mip_levels > 1 {
+            generate_mips(
+                init_resources.device,
+                init_resources.command_buffer,
+                image,
+                extent.width as i32,
+                extent.height as i32,
+                mip_levels,
+                next_accesses,
+                next_layout,
+            );
+        }
     }
 
     Ok((
@@ -717,9 +652,9 @@ impl Buffer {
     }
 
     pub fn cleanup(&self, device: &ash::Device, allocator: &mut Allocator) -> anyhow::Result<()> {
-        allocator.free(self.allocation.clone())?;
-
         unsafe { device.destroy_buffer(self.buffer, None) };
+
+        allocator.free(self.allocation.clone())?;
 
         Ok(())
     }
@@ -863,12 +798,12 @@ impl Image {
     }
 
     pub fn cleanup(&self, device: &ash::Device, allocator: &mut Allocator) -> anyhow::Result<()> {
-        allocator.free(self.allocation.clone())?;
-
         unsafe {
             device.destroy_image_view(self.view, None);
-            device.destroy_image(self.image, None)
+            device.destroy_image(self.image, None);
         }
+
+        allocator.free(self.allocation.clone())?;
 
         Ok(())
     }
@@ -919,5 +854,110 @@ impl Swapchain {
                 image_views,
             })
         }
+    }
+}
+
+// The top mip must be in a transfer src layout and the rest must be in transfer dst.
+pub fn generate_mips(
+    device: &ash::Device,
+    command_buffer: vk::CommandBuffer,
+    image: vk::Image,
+    mut width: i32,
+    mut height: i32,
+    mip_levels: u32,
+    next_accesses: &[vk_sync::AccessType],
+    next_layout: vk_sync::ImageLayout,
+) {
+    for i in 0..mip_levels - 1 {
+        let blit = vk::ImageBlit {
+            src_subresource: vk::ImageSubresourceLayers {
+                aspect_mask: vk::ImageAspectFlags::COLOR,
+                mip_level: i,
+                base_array_layer: 0,
+                layer_count: 1,
+            },
+            src_offsets: [
+                vk::Offset3D::default(),
+                vk::Offset3D {
+                    x: width,
+                    y: height,
+                    z: 1,
+                },
+            ],
+            dst_subresource: vk::ImageSubresourceLayers {
+                aspect_mask: vk::ImageAspectFlags::COLOR,
+                mip_level: i + 1,
+                base_array_layer: 0,
+                layer_count: 1,
+            },
+            dst_offsets: [
+                vk::Offset3D::default(),
+                vk::Offset3D {
+                    x: (width / 2).max(1),
+                    y: (height / 2).max(1),
+                    z: 1,
+                },
+            ],
+        };
+
+        unsafe {
+            device.cmd_blit_image(
+                command_buffer,
+                image,
+                vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
+                image,
+                vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+                &[blit],
+                vk::Filter::LINEAR,
+            );
+        }
+
+        let mip_i = *vk::ImageSubresourceRange::builder()
+            .aspect_mask(vk::ImageAspectFlags::COLOR)
+            .level_count(1)
+            .base_mip_level(i)
+            .layer_count(1);
+
+        let mip_i_plus_one = *vk::ImageSubresourceRange::builder()
+            .aspect_mask(vk::ImageAspectFlags::COLOR)
+            .level_count(1)
+            .base_mip_level(i + 1)
+            .layer_count(1);
+
+        vk_sync::cmd::pipeline_barrier(
+            device,
+            command_buffer,
+            None,
+            &[],
+            &[
+                vk_sync::ImageBarrier {
+                    previous_accesses: &[vk_sync::AccessType::TransferRead],
+                    next_accesses,
+                    next_layout,
+                    image,
+                    range: mip_i,
+                    ..Default::default()
+                },
+                vk_sync::ImageBarrier {
+                    previous_accesses: &[vk_sync::AccessType::TransferWrite],
+                    next_accesses: if i + 1 == mip_levels - 1 {
+                        next_accesses
+                    } else {
+                        &[vk_sync::AccessType::TransferRead]
+                    },
+                    next_layout: if i + 1 == mip_levels - 1 {
+                        next_layout
+                    } else {
+                        vk_sync::ImageLayout::Optimal
+                    },
+                    image,
+                    range: mip_i_plus_one,
+                    ..Default::default()
+                },
+            ],
+        );
+
+        width = (width / 2).max(1);
+        height = (height / 2).max(1);
     }
 }

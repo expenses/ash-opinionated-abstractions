@@ -625,6 +625,45 @@ impl Buffer {
         Self::from_parts(allocation, buffer, bytes, name, init_resources)
     }
 
+    pub fn new_of_size(
+        size: vk::DeviceSize,
+        name: &str,
+        usage: vk::BufferUsageFlags,
+        init_resources: &mut InitResources,
+    ) -> anyhow::Result<Self> {
+        let buffer = unsafe {
+            init_resources.device.create_buffer(
+                &vk::BufferCreateInfo::builder()
+                    .size(size)
+                    .usage(usage),
+                None,
+            )
+        }?;
+
+        let requirements = unsafe { init_resources.device.get_buffer_memory_requirements(buffer) };
+
+        let allocation = init_resources.allocator.allocate(&AllocationCreateDesc {
+            name,
+            requirements,
+            location: gpu_allocator::MemoryLocation::GpuOnly,
+            linear: true,
+        })?;
+
+        unsafe {
+            init_resources.device.bind_buffer_memory(
+                buffer,
+                allocation.memory(),
+                allocation.offset(),
+            )?;
+        };
+
+        if let Some(debug_utils_loader) = init_resources.debug_utils_loader {
+            set_object_name(init_resources.device, debug_utils_loader, buffer, name)?;
+        }
+
+        Ok(Self { buffer, allocation })
+    }
+
     fn from_parts(
         mut allocation: Allocation,
         buffer: vk::Buffer,

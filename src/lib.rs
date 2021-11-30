@@ -625,6 +625,38 @@ impl Buffer {
         Self::from_parts(allocation, buffer, bytes, name, init_resources)
     }
 
+    pub fn new_with_alignment(
+        bytes: &[u8],
+        name: &str,
+        usage: vk::BufferUsageFlags,
+        alignment: u64,
+        init_resources: &mut InitResources,
+    ) -> anyhow::Result<Self> {
+        let buffer_size = bytes.len() as vk::DeviceSize;
+
+        let buffer = unsafe {
+            init_resources.device.create_buffer(
+                &vk::BufferCreateInfo::builder()
+                    .size(buffer_size)
+                    .usage(usage),
+                None,
+            )
+        }?;
+
+        let mut requirements =
+            unsafe { init_resources.device.get_buffer_memory_requirements(buffer) };
+        requirements.alignment = alignment;
+
+        let allocation = init_resources.allocator.allocate(&AllocationCreateDesc {
+            name,
+            requirements,
+            location: gpu_allocator::MemoryLocation::CpuToGpu,
+            linear: true,
+        })?;
+
+        Self::from_parts(allocation, buffer, bytes, name, init_resources)
+    }
+
     pub fn new_of_size(
         size: vk::DeviceSize,
         name: &str,
@@ -633,9 +665,7 @@ impl Buffer {
     ) -> anyhow::Result<Self> {
         let buffer = unsafe {
             init_resources.device.create_buffer(
-                &vk::BufferCreateInfo::builder()
-                    .size(size)
-                    .usage(usage),
+                &vk::BufferCreateInfo::builder().size(size).usage(usage),
                 None,
             )
         }?;
@@ -664,6 +694,55 @@ impl Buffer {
         Ok(Self { buffer, allocation })
     }
 
+    pub fn new_of_size_with_alignment(
+        size: vk::DeviceSize,
+        name: &str,
+        usage: vk::BufferUsageFlags,
+        alignment: u64,
+        init_resources: &mut InitResources,
+    ) -> anyhow::Result<Self> {
+        let buffer = unsafe {
+            init_resources.device.create_buffer(
+                &vk::BufferCreateInfo::builder().size(size).usage(usage),
+                None,
+            )
+        }?;
+
+        let mut requirements =
+            unsafe { init_resources.device.get_buffer_memory_requirements(buffer) };
+        requirements.alignment = alignment;
+
+        let allocation = init_resources.allocator.allocate(&AllocationCreateDesc {
+            name,
+            requirements,
+            location: gpu_allocator::MemoryLocation::GpuOnly,
+            linear: true,
+        })?;
+
+        unsafe {
+            init_resources.device.bind_buffer_memory(
+                buffer,
+                allocation.memory(),
+                allocation.offset(),
+            )?;
+        };
+
+        if let Some(debug_utils_loader) = init_resources.debug_utils_loader {
+            set_object_name(init_resources.device, debug_utils_loader, buffer, name)?;
+        }
+
+        Ok(Self { buffer, allocation })
+    }
+
+    pub fn write_mapped(&mut self, bytes: &[u8], offset: usize) -> anyhow::Result<()> {
+        let slice = self
+            .allocation
+            .mapped_slice_mut()
+            .ok_or_else(|| anyhow::anyhow!("Attempted to write to a buffer that wasn't mapped"))?;
+        slice[offset..offset + bytes.len()].copy_from_slice(bytes);
+        Ok(())
+    }
+
     fn from_parts(
         mut allocation: Allocation,
         buffer: vk::Buffer,
@@ -688,6 +767,14 @@ impl Buffer {
         }
 
         Ok(Self { buffer, allocation })
+    }
+
+    pub fn device_address(&self, device: &ash::Device) -> vk::DeviceAddress {
+        unsafe {
+            device.get_buffer_device_address(
+                &vk::BufferDeviceAddressInfo::builder().buffer(self.buffer),
+            )
+        }
     }
 
     pub fn cleanup(&self, device: &ash::Device, allocator: &mut Allocator) -> anyhow::Result<()> {

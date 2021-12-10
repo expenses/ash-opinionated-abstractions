@@ -208,9 +208,9 @@ checksum = "8ccb82d61f80a663efe1f787a51b16b5a51e3314d6ac365b08639f52387b33f3"
 
 [[package]]
 name = "vk-sync-fork"
-version = "0.2.1"
+version = "0.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "dec4933d9b2bc41211cb06994a367c20cf33d39b0450b3763a2c502956036c92"
+checksum = "46549b08cdc0ce292a35c77ece31f0a2046b6b95db78f208b17017ac69bbaba2"
 dependencies = [
  "ash",
 ]

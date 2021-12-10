@@ -8,4 +8,4 @@ anyhow = "1.0.44"
 ash = "0.33.3"
 gpu-allocator = "0.10.0"
 log = "0.4.14"
-vk-sync = { package = "vk-sync-fork", version = "0.2.1" }
+vk-sync = { package = "vk-sync-fork", version = "0.2.2" }

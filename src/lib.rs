@@ -510,7 +510,6 @@ pub fn load_image_from_bytes(
         None,
         &[],
         &[vk_sync::ImageBarrier {
-            previous_accesses: &[vk_sync::AccessType::Nothing],
             next_accesses: &[vk_sync::AccessType::TransferWrite],
             next_layout: vk_sync::ImageLayout::Optimal,
             image,
@@ -538,35 +537,27 @@ pub fn load_image_from_bytes(
                 .image_extent(extent)],
         );
 
-        let base_subresource_range = *vk::ImageSubresourceRange::builder()
-            .aspect_mask(vk::ImageAspectFlags::COLOR)
-            .level_count(1)
-            .layer_count(1);
-
-        vk_sync::cmd::pipeline_barrier(
-            init_resources.device,
-            init_resources.command_buffer,
-            None,
-            &[],
-            &[vk_sync::ImageBarrier {
-                previous_accesses: &[vk_sync::AccessType::TransferWrite],
-                next_accesses: if mip_levels > 1 {
-                    &[vk_sync::AccessType::TransferRead]
-                } else {
-                    next_accesses
-                },
-                next_layout: if mip_levels > 1 {
-                    vk_sync::ImageLayout::Optimal
-                } else {
-                    next_layout
-                },
-                image,
-                range: base_subresource_range,
-                ..Default::default()
-            }],
-        );
-
         if mip_levels > 1 {
+            let base_subresource_range = *vk::ImageSubresourceRange::builder()
+                .aspect_mask(vk::ImageAspectFlags::COLOR)
+                .level_count(1)
+                .layer_count(1);
+
+            vk_sync::cmd::pipeline_barrier(
+                init_resources.device,
+                init_resources.command_buffer,
+                None,
+                &[],
+                &[vk_sync::ImageBarrier {
+                    previous_accesses: &[vk_sync::AccessType::TransferWrite],
+                    next_accesses: &[vk_sync::AccessType::TransferRead],
+                    next_layout: vk_sync::ImageLayout::Optimal,
+                    image,
+                    range: base_subresource_range,
+                    ..Default::default()
+                }],
+            );
+
             generate_mips(
                 init_resources.device,
                 init_resources.command_buffer,
@@ -576,6 +567,21 @@ pub fn load_image_from_bytes(
                 mip_levels,
                 next_accesses,
                 next_layout,
+            );
+        } else {
+            vk_sync::cmd::pipeline_barrier(
+                init_resources.device,
+                init_resources.command_buffer,
+                None,
+                &[],
+                &[vk_sync::ImageBarrier {
+                    previous_accesses: &[vk_sync::AccessType::TransferWrite],
+                    next_accesses,
+                    next_layout,
+                    image,
+                    range: full_subresource_range,
+                    ..Default::default()
+                }],
             );
         }
     }

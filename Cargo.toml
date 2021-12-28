@@ -4,8 +4,8 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-anyhow = "1.0.44"
-ash = "0.33.3"
-gpu-allocator = "0.10.0"
+anyhow = "1.0.52"
+ash = "0.35.0"
+gpu-allocator = "0.14.0"
 log = "0.4.14"
-vk-sync = { package = "vk-sync-fork", version = "0.2.2" }
+vk-sync = { package = "vk-sync-fork", version = "0.3.0" }
